@@ -47,6 +47,10 @@ struct CuAcqState
     cufftHandle fft_plan_fwd;
     cufftHandle fft_plan_inv;
     cufftHandle fft_plan_single;
+
+    // Per-channel CUDA stream (avoids default-stream serialization conflicts
+    // when multiple acquisition channels run concurrently)
+    cudaStream_t stream;
 };
 
 

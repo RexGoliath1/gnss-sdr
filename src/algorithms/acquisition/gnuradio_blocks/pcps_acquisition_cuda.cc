@@ -203,23 +203,12 @@ void pcps_acquisition_cuda::init()
                    ? static_cast<float>(d_acq_parameters.resampled_fs)
                    : static_cast<float>(d_acq_parameters.fs_in);
 
-    if (!d_cuda_initialized)
-        {
-            cuacq_init(&d_cuda_state,
-                d_fft_size,
-                d_num_doppler_bins,
-                static_cast<float>(d_acq_parameters.doppler_max),
-                static_cast<float>(d_doppler_step),
-                fs);
-            d_cuda_state.doppler_center_hz = static_cast<float>(d_doppler_center + d_doppler_bias);
-            d_cuda_initialized = true;
-            // Replay deferred set_local_code if it was called before init
-            if (!d_cached_code_buf.empty())
-                {
-                    cuacq_set_local_code(&d_cuda_state, d_cached_code_buf.data());
-                }
-        }
-    else
+    // CUDA init is deferred to acquisition_core() because main.cc calls
+    // cudaDeviceReset() AFTER flowgraph construction, which invalidates
+    // all prior cudaMallocManaged allocations. Store params for lazy init.
+    d_cuda_fs = fs;
+
+    if (d_cuda_initialized)
         {
             // Update parameters if already initialized
             cuacq_update_doppler_params(&d_cuda_state,
@@ -351,6 +340,24 @@ void pcps_acquisition_cuda::send_negative_acquisition()
 void pcps_acquisition_cuda::acquisition_core(uint64_t samp_count)
 {
     gr::thread::scoped_lock lk(d_setlock);
+
+    // Lazy CUDA init: deferred from init() because main.cc calls cudaDeviceReset()
+    // after flowgraph construction, which invalidates all prior CUDA allocations.
+    if (!d_cuda_initialized)
+        {
+            cuacq_init(&d_cuda_state,
+                d_fft_size,
+                d_num_doppler_bins,
+                static_cast<float>(d_acq_parameters.doppler_max),
+                static_cast<float>(d_doppler_step),
+                d_cuda_fs);
+            d_cuda_state.doppler_center_hz = static_cast<float>(d_doppler_center + d_doppler_bias);
+            d_cuda_initialized = true;
+            if (!d_cached_code_buf.empty())
+                {
+                    cuacq_set_local_code(&d_cuda_state, d_cached_code_buf.data());
+                }
+        }
 
     int32_t doppler = 0;
     uint32_t indext = 0U;

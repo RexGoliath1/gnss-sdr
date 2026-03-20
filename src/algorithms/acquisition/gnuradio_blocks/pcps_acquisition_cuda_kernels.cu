@@ -16,6 +16,13 @@
 #include "pcps_acquisition_cuda_kernels.h"
 #include <cstdio>
 #include <cstring>
+#include <mutex>
+
+// Global mutex to serialize CUDA operations across acquisition threads.
+// cuFFT on Jetson unified memory may not be fully thread-safe for concurrent
+// ExecC2C calls from different host threads. This serializes all GPU work.
+// Performance impact is minimal: acquisition is bursty and each call is <12ms.
+static std::mutex g_cuda_mutex;
 
 // ============================================================================
 // CUDA Kernels
@@ -127,6 +134,7 @@ void cuacq_init(CuAcqState* state,
     float doppler_step_hz,
     float fs_hz)
 {
+    std::lock_guard<std::mutex> lock(g_cuda_mutex);
     state->fft_size = fft_size;
     state->num_doppler_bins = num_doppler_bins;
     state->doppler_max_hz = doppler_max_hz;
@@ -136,29 +144,49 @@ void cuacq_init(CuAcqState* state,
 
     const size_t batch_size = static_cast<size_t>(num_doppler_bins) * fft_size;
 
+    fprintf(stderr, "cuacq_init: fft_size=%u, bins=%u, fs=%.0f\n", fft_size, num_doppler_bins, fs_hz);
+
     // Unified memory for Jetson (no PCIe copy overhead)
-    cudaMallocManaged(&state->d_signal, fft_size * sizeof(cufftComplex));
+    cudaError_t err = cudaMallocManaged(&state->d_signal, fft_size * sizeof(cufftComplex));
+    fprintf(stderr, "cuacq_init: d_signal=%p (cudaMallocManaged returned %d)\n", (void*)state->d_signal, (int)err);
+    if (err != cudaSuccess) { fprintf(stderr, "cuacq_init: CUDA alloc failed: %s\n", cudaGetErrorString(err)); return; }
     cudaMallocManaged(&state->d_code_fft_conj, fft_size * sizeof(cufftComplex));
     cudaMallocManaged(&state->d_doppler_removed, batch_size * sizeof(cufftComplex));
     cudaMallocManaged(&state->d_spectral_product, batch_size * sizeof(cufftComplex));
     cudaMallocManaged(&state->d_corr_ifft_out, batch_size * sizeof(cufftComplex));
     cudaMallocManaged(&state->d_magnitude_grid, batch_size * sizeof(float));
+    fprintf(stderr, "cuacq_init: batch allocs done (batch_size=%zu)\n", batch_size);
 
     // Peak result scalars
     cudaMallocManaged(&state->d_peak_value, sizeof(float));
     cudaMallocManaged(&state->d_peak_index, sizeof(uint32_t));
 
-    // Batched cuFFT plans
-    cufftPlan1d(&state->fft_plan_fwd, fft_size, CUFFT_C2C, num_doppler_bins);
-    cufftPlan1d(&state->fft_plan_inv, fft_size, CUFFT_C2C, num_doppler_bins);
+    // Per-channel CUDA stream
+    cudaStreamCreate(&state->stream);
+
+    // Batched cuFFT plans — associate with per-channel stream
+    fprintf(stderr, "cuacq_init: creating cuFFT plans...\n");
+    cufftResult fwd_res = cufftPlan1d(&state->fft_plan_fwd, fft_size, CUFFT_C2C, num_doppler_bins);
+    cufftSetStream(state->fft_plan_fwd, state->stream);
+    fprintf(stderr, "cuacq_init: fwd plan result=%d\n", (int)fwd_res);
+    cufftResult inv_res = cufftPlan1d(&state->fft_plan_inv, fft_size, CUFFT_C2C, num_doppler_bins);
+    cufftSetStream(state->fft_plan_inv, state->stream);
+    fprintf(stderr, "cuacq_init: inv plan result=%d\n", (int)inv_res);
 
     // Single-transform plan for code FFT
-    cufftPlan1d(&state->fft_plan_single, fft_size, CUFFT_C2C, 1);
+    cufftResult single_res = cufftPlan1d(&state->fft_plan_single, fft_size, CUFFT_C2C, 1);
+    cufftSetStream(state->fft_plan_single, state->stream);
+    cudaDeviceSynchronize();  // Ensure all plans/allocs are fully materialized
+    fprintf(stderr, "cuacq_init: single plan result=%d, DONE\n", (int)single_res);
 }
 
 
 void cuacq_set_local_code(CuAcqState* state, const std::complex<float>* code_samples)
 {
+    std::lock_guard<std::mutex> lock(g_cuda_mutex);
+    fprintf(stderr, "cuacq_set_local_code: d_signal=%p, fft_size=%u\n",
+        (void*)state->d_signal, state->fft_size);
+    fflush(stderr);
     // Copy code into device signal buffer
     memcpy(state->d_signal, code_samples, state->fft_size * sizeof(cufftComplex));
 
@@ -168,9 +196,9 @@ void cuacq_set_local_code(CuAcqState* state, const std::complex<float>* code_sam
     // Conjugate the FFT result
     uint32_t tpb = 256;
     uint32_t blocks = (state->fft_size + tpb - 1) / tpb;
-    conjugate_kernel<<<blocks, tpb>>>(state->d_code_fft_conj, state->fft_size);
+    conjugate_kernel<<<blocks, tpb, 0, state->stream>>>(state->d_code_fft_conj, state->fft_size);
 
-    cudaDeviceSynchronize();
+    cudaStreamSynchronize(state->stream);
 }
 
 
@@ -179,8 +207,26 @@ void cuacq_acquisition_core(CuAcqState* state,
     bool accumulate,
     uint32_t effective_fft_size)
 {
+    std::lock_guard<std::mutex> lock(g_cuda_mutex);
     const uint32_t N = state->fft_size;
     const uint32_t B = state->num_doppler_bins;
+
+    // Diagnostic checks for segfault debugging
+    if (state->d_signal == nullptr)
+        {
+            fprintf(stderr, "cuacq_acquisition_core: d_signal is NULL! fft_size=%u, bins=%u\n", N, B);
+            return;
+        }
+    if (input_signal == nullptr)
+        {
+            fprintf(stderr, "cuacq_acquisition_core: input_signal is NULL!\n");
+            return;
+        }
+    if (N == 0 || B == 0)
+        {
+            fprintf(stderr, "cuacq_acquisition_core: invalid dims N=%u B=%u\n", N, B);
+            return;
+        }
 
     // Copy input signal to unified memory
     memcpy(state->d_signal, input_signal, N * sizeof(cufftComplex));
@@ -191,7 +237,7 @@ void cuacq_acquisition_core(CuAcqState* state,
     const dim3 grid((N + threads_per_block - 1) / threads_per_block, B);
 
     // Step 1: Doppler wipeoff (all bins, one kernel launch)
-    doppler_wipeoff_kernel<<<grid, block>>>(
+    doppler_wipeoff_kernel<<<grid, block, 0, state->stream>>>(
         state->d_signal,
         state->d_doppler_removed,
         N, B,
@@ -207,7 +253,7 @@ void cuacq_acquisition_core(CuAcqState* state,
         CUFFT_FORWARD);
 
     // Step 3: Spectral multiply with code FFT conjugate
-    spectral_multiply_kernel<<<grid, block>>>(
+    spectral_multiply_kernel<<<grid, block, 0, state->stream>>>(
         state->d_doppler_removed,
         state->d_code_fft_conj,
         state->d_spectral_product,
@@ -222,20 +268,20 @@ void cuacq_acquisition_core(CuAcqState* state,
     // Step 5: Magnitude squared (with optional accumulation for non-coherent integration)
     if (accumulate)
         {
-            magnitude_squared_accumulate_kernel<<<grid, block>>>(
+            magnitude_squared_accumulate_kernel<<<grid, block, 0, state->stream>>>(
                 state->d_corr_ifft_out,
                 state->d_magnitude_grid,
                 N, B);
         }
     else
         {
-            magnitude_squared_kernel<<<grid, block>>>(
+            magnitude_squared_kernel<<<grid, block, 0, state->stream>>>(
                 state->d_corr_ifft_out,
                 state->d_magnitude_grid,
                 N, B);
         }
 
-    cudaDeviceSynchronize();
+    cudaStreamSynchronize(state->stream);
 }
 
 
@@ -376,6 +422,7 @@ void cuacq_destroy(CuAcqState* state)
     cufftDestroy(state->fft_plan_fwd);
     cufftDestroy(state->fft_plan_inv);
     cufftDestroy(state->fft_plan_single);
+    cudaStreamDestroy(state->stream);
 
     cudaFree(state->d_signal);
     cudaFree(state->d_code_fft_conj);

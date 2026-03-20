@@ -138,6 +138,7 @@ private:
     // CUDA state
     CuAcqState d_cuda_state;
     bool d_cuda_initialized;
+    volk_gnsssdr::vector<std::complex<float>> d_cached_code_buf;  // deferred until CUDA init
 
     // Data buffers (host side, for GNU Radio interface)
     volk_gnsssdr::vector<std::complex<float>> d_input_signal;

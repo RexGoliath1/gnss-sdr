@@ -149,7 +149,13 @@ void pcps_acquisition_cuda::set_local_code(std::complex<float>* code)
         }
 
     // Set local code on GPU (computes FFT + conjugate)
-    cuacq_set_local_code(&d_cuda_state, code_buf.data());
+    // Guard: CUDA state may not be initialized yet (init() called after set_local_code).
+    // Cache the code buffer and replay when init() runs.
+    d_cached_code_buf = code_buf;
+    if (d_cuda_initialized)
+        {
+            cuacq_set_local_code(&d_cuda_state, d_cached_code_buf.data());
+        }
 }
 
 
@@ -207,6 +213,11 @@ void pcps_acquisition_cuda::init()
                 fs);
             d_cuda_state.doppler_center_hz = static_cast<float>(d_doppler_center + d_doppler_bias);
             d_cuda_initialized = true;
+            // Replay deferred set_local_code if it was called before init
+            if (!d_cached_code_buf.empty())
+                {
+                    cuacq_set_local_code(&d_cuda_state, d_cached_code_buf.data());
+                }
         }
     else
         {

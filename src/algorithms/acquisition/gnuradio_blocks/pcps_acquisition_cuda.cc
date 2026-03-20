@@ -326,10 +326,8 @@ void pcps_acquisition_cuda::send_negative_acquisition()
                << ", magnitude " << d_mag
                << ", input signal power " << d_input_power;
 
-    if (!d_channel_fsm.expired())
-        {
-            d_channel_fsm.lock()->Event_failed_acquisition();
-        }
+    d_positive_acq = 0;
+    this->message_port_pub(pmt::mp("events"), pmt::from_long(2));
 
     if (d_acq_parameters.enable_monitor_output)
         {

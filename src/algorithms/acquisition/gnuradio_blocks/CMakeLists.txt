@@ -119,7 +119,7 @@ if(ENABLE_CUDA)
         pcps_acquisition_cuda_kernels.h
     )
     set_target_properties(acquisition_cuda_kernels PROPERTIES
-        CUDA_SEPARABLE_COMPILATION ON
+        CUDA_SEPARABLE_COMPILATION OFF
         CUDA_STANDARD 14
         POSITION_INDEPENDENT_CODE ON
     )

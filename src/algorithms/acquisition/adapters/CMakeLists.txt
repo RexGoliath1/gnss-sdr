@@ -80,6 +80,15 @@ if(ENABLE_OPENCL)
     )
 endif()
 
+if(ENABLE_CUDA)
+    set(ACQ_ADAPTER_SOURCES ${ACQ_ADAPTER_SOURCES}
+        gps_l1_ca_pcps_acquisition_cuda.cc
+    )
+    set(ACQ_ADAPTER_HEADERS ${ACQ_ADAPTER_HEADERS}
+        gps_l1_ca_pcps_acquisition_cuda.h
+    )
+endif()
+
 list(SORT ACQ_ADAPTER_HEADERS)
 list(SORT ACQ_ADAPTER_SOURCES)
 

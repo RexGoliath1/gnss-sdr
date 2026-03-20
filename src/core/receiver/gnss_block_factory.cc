@@ -77,6 +77,9 @@
 #include "gps_l1_ca_gaussian_tracking.h"
 #include "gps_l1_ca_kf_tracking.h"
 #include "gps_l1_ca_pcps_acquisition.h"
+#if CUDA_GPU_ACCEL
+#include "gps_l1_ca_pcps_acquisition_cuda.h"
+#endif
 #include "gps_l1_ca_pcps_acquisition_fine_doppler.h"
 #include "gps_l1_ca_pcps_assisted_acquisition.h"
 #include "gps_l1_ca_pcps_quicksync_acquisition.h"
@@ -987,6 +990,14 @@ std::unique_ptr<GNSSBlockInterface> GNSSBlockFactory::GetBlock(
                         out_streams);
                     block = std::move(block_);
                 }
+#if CUDA_GPU_ACCEL
+            else if (implementation == "GPS_L1_CA_PCPS_Acquisition_CUDA")
+                {
+                    std::unique_ptr<GNSSBlockInterface> block_ = std::make_unique<GpsL1CaPcpsAcquisitionCuda>(configuration, role, in_streams,
+                        out_streams);
+                    block = std::move(block_);
+                }
+#endif
             else if (implementation == "GPS_L1_CA_PCPS_Assisted_Acquisition")
                 {
                     std::unique_ptr<GNSSBlockInterface> block_ = std::make_unique<GpsL1CaPcpsAssistedAcquisition>(configuration, role, in_streams,
@@ -1424,6 +1435,14 @@ std::unique_ptr<AcquisitionInterface> GNSSBlockFactory::GetAcqBlock(
                 out_streams);
             block = std::move(block_);
         }
+#if CUDA_GPU_ACCEL
+    else if (implementation == "GPS_L1_CA_PCPS_Acquisition_CUDA")
+        {
+            std::unique_ptr<AcquisitionInterface> block_ = std::make_unique<GpsL1CaPcpsAcquisitionCuda>(configuration, role, in_streams,
+                out_streams);
+            block = std::move(block_);
+        }
+#endif
     else if (implementation == "GPS_L1_CA_PCPS_Assisted_Acquisition")
         {
             std::unique_ptr<AcquisitionInterface> block_ = std::make_unique<GpsL1CaPcpsAssistedAcquisition>(configuration, role, in_streams,

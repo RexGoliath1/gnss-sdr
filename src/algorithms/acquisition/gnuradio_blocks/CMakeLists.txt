@@ -37,6 +37,11 @@ if(ENABLE_OPENCL)
     set(ACQ_GR_BLOCKS_HEADERS ${ACQ_GR_BLOCKS_HEADERS} pcps_opencl_acquisition_cc.h)
 endif()
 
+if(ENABLE_CUDA)
+    set(ACQ_GR_BLOCKS_SOURCES ${ACQ_GR_BLOCKS_SOURCES} pcps_acquisition_cuda.cc)
+    set(ACQ_GR_BLOCKS_HEADERS ${ACQ_GR_BLOCKS_HEADERS} pcps_acquisition_cuda.h pcps_acquisition_cuda_kernels.h)
+endif()
+
 list(SORT ACQ_GR_BLOCKS_HEADERS)
 list(SORT ACQ_GR_BLOCKS_SOURCES)
 
@@ -103,6 +108,34 @@ if(ENABLE_OPENCL)
     target_include_directories(acquisition_gr_blocks
         PUBLIC
             ${GNSSSDR_SOURCE_DIR}/src/algorithms/libs/opencl
+    )
+endif()
+
+if(ENABLE_CUDA)
+    # Build CUDA kernels as a separate static library and link to acquisition_gr_blocks
+    enable_language(CUDA)
+    add_library(acquisition_cuda_kernels STATIC
+        pcps_acquisition_cuda_kernels.cu
+        pcps_acquisition_cuda_kernels.h
+    )
+    set_target_properties(acquisition_cuda_kernels PROPERTIES
+        CUDA_SEPARABLE_COMPILATION ON
+        CUDA_STANDARD 14
+        POSITION_INDEPENDENT_CODE ON
+    )
+    target_include_directories(acquisition_cuda_kernels
+        PUBLIC
+            ${CMAKE_CURRENT_SOURCE_DIR}
+            ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}
+    )
+    target_link_libraries(acquisition_cuda_kernels
+        PUBLIC
+            CUDA::cufft
+            CUDA::cudart
+    )
+    target_link_libraries(acquisition_gr_blocks PUBLIC acquisition_cuda_kernels)
+    target_include_directories(acquisition_gr_blocks
+        PUBLIC ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}
     )
 endif()
 

@@ -154,7 +154,9 @@ void pcps_acquisition_cuda::set_local_code(std::complex<float>* code)
     d_cached_code_buf = code_buf;
     if (d_cuda_initialized)
         {
+            cuacq_lock();
             cuacq_set_local_code(&d_cuda_state, d_cached_code_buf.data());
+            cuacq_unlock();
         }
 }
 
@@ -340,6 +342,11 @@ void pcps_acquisition_cuda::send_negative_acquisition()
 void pcps_acquisition_cuda::acquisition_core(uint64_t samp_count)
 {
     gr::thread::scoped_lock lk(d_setlock);
+
+    // Serialize all CUDA operations + CPU reads of unified memory.
+    // On Jetson, concurrent GPU kernel launches and CPU reads of managed memory
+    // cause page migration conflicts (SIGSEGV). Hold for entire acquisition cycle.
+    cuacq_lock();
 
     // Lazy CUDA init: deferred from init() because main.cc calls cudaDeviceReset()
     // after flowgraph construction, which invalidates all prior CUDA allocations.
@@ -627,6 +634,8 @@ void pcps_acquisition_cuda::acquisition_core(uint64_t samp_count)
                     send_negative_acquisition();
                 }
         }
+
+    cuacq_unlock();  // Release CUDA mutex — all GPU ops + CPU reads complete
 
     d_worker_active = false;
 

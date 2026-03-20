@@ -19,10 +19,21 @@
 #include <mutex>
 
 // Global mutex to serialize CUDA operations across acquisition threads.
-// cuFFT on Jetson unified memory may not be fully thread-safe for concurrent
-// ExecC2C calls from different host threads. This serializes all GPU work.
-// Performance impact is minimal: acquisition is bursty and each call is <12ms.
+// On Jetson unified memory, concurrent GPU kernel launches and CPU reads of
+// managed memory can cause page migration/coherency conflicts (SIGSEGV).
+// All CUDA operations AND subsequent CPU reads of unified memory must be
+// serialized. Performance impact is minimal: acquisition is bursty, ~12ms.
 static std::mutex g_cuda_mutex;
+
+void cuacq_lock()
+{
+    g_cuda_mutex.lock();
+}
+
+void cuacq_unlock()
+{
+    g_cuda_mutex.unlock();
+}
 
 // ============================================================================
 // CUDA Kernels
@@ -134,7 +145,7 @@ void cuacq_init(CuAcqState* state,
     float doppler_step_hz,
     float fs_hz)
 {
-    std::lock_guard<std::mutex> lock(g_cuda_mutex);
+    // Caller must hold g_cuda_mutex via cuacq_lock()
     state->fft_size = fft_size;
     state->num_doppler_bins = num_doppler_bins;
     state->doppler_max_hz = doppler_max_hz;
@@ -183,7 +194,7 @@ void cuacq_init(CuAcqState* state,
 
 void cuacq_set_local_code(CuAcqState* state, const std::complex<float>* code_samples)
 {
-    std::lock_guard<std::mutex> lock(g_cuda_mutex);
+    // Caller must hold g_cuda_mutex via cuacq_lock()
     fprintf(stderr, "cuacq_set_local_code: d_signal=%p, fft_size=%u\n",
         (void*)state->d_signal, state->fft_size);
     fflush(stderr);
@@ -207,11 +218,11 @@ void cuacq_acquisition_core(CuAcqState* state,
     bool accumulate,
     uint32_t effective_fft_size)
 {
-    std::lock_guard<std::mutex> lock(g_cuda_mutex);
+    // Caller must hold g_cuda_mutex via cuacq_lock()
     const uint32_t N = state->fft_size;
     const uint32_t B = state->num_doppler_bins;
 
-    // Diagnostic checks for segfault debugging
+    // Diagnostic checks
     if (state->d_signal == nullptr)
         {
             fprintf(stderr, "cuacq_acquisition_core: d_signal is NULL! fft_size=%u, bins=%u\n", N, B);
@@ -387,6 +398,7 @@ void cuacq_update_doppler_params(CuAcqState* state,
     float doppler_step_hz,
     float doppler_center_hz)
 {
+    std::lock_guard<std::mutex> lock(g_cuda_mutex);  // protects cudaFree/MallocManaged/cufftPlan
     bool need_replan = (state->num_doppler_bins != num_doppler_bins);
 
     state->num_doppler_bins = num_doppler_bins;
@@ -419,6 +431,7 @@ void cuacq_update_doppler_params(CuAcqState* state,
 
 void cuacq_destroy(CuAcqState* state)
 {
+    std::lock_guard<std::mutex> lock(g_cuda_mutex);  // protects cufftDestroy/cudaFree
     cufftDestroy(state->fft_plan_fwd);
     cufftDestroy(state->fft_plan_inv);
     cufftDestroy(state->fft_plan_single);

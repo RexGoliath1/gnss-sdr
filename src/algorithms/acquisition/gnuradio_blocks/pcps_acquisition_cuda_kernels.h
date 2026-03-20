@@ -55,7 +55,16 @@ struct CuAcqState
 
 
 /*!
+ * \brief Global CUDA mutex lock/unlock — serializes all GPU operations and
+ * CPU reads of unified memory across acquisition channels. Caller must bracket
+ * the entire GPU work + readback sequence with cuacq_lock()/cuacq_unlock().
+ */
+void cuacq_lock();
+void cuacq_unlock();
+
+/*!
  * \brief Initialize cuFFT acquisition state — called once per channel at startup.
+ * Caller must hold cuacq_lock().
  */
 void cuacq_init(CuAcqState* state,
     uint32_t fft_size,

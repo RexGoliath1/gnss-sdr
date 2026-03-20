@@ -41,6 +41,19 @@
 
 #define ACCUM_N 128
 
+#define gpuErrchk(ans)                        \
+    {                                         \
+        gpuAssert((ans), __FILE__, __LINE__); \
+    }
+inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort = true)
+{
+    if (code != cudaSuccess)
+        {
+            fprintf(stderr, "GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+            if (abort) exit(code);
+        }
+}
+
 
 /*
  * Kernel 1: Doppler wipe-off
@@ -185,20 +198,6 @@ bool cuda_multicorrelator::Carrier_wipeoff_multicorrelator_resampler_cuda(
     gpuErrchk(cudaStreamSynchronize(stream1));
 
     return true;
-}
-
-
-#define gpuErrchk(ans)                        \
-    {                                         \
-        gpuAssert((ans), __FILE__, __LINE__); \
-    }
-inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort = true)
-{
-    if (code != cudaSuccess)
-        {
-            fprintf(stderr, "GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
-            if (abort) exit(code);
-        }
 }
 
 
